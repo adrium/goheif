@@ -3,13 +3,12 @@ package goheif
 import (
 	"bytes"
 	"fmt"
+	"github.com/MaxBoych/goheif/heif"
+	"github.com/MaxBoych/goheif/libde265"
 	"image"
 	"image/color"
 	"io"
 	"io/ioutil"
-
-	"github.com/adrium/goheif/heif"
-	"github.com/adrium/goheif/libde265"
 )
 
 // SafeEncoding uses more memory but seems to make

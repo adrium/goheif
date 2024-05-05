@@ -24,10 +24,9 @@ package heif
 import (
 	"errors"
 	"fmt"
+	"github.com/MaxBoych/goheif/heif/bmff"
 	"io"
 	"log"
-
-	"github.com/adrium/goheif/heif/bmff"
 )
 
 // File represents a HEIF file.
