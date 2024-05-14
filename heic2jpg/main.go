@@ -3,12 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/MaxBoych/goheif"
 	"image/jpeg"
 	"io"
 	"log"
 	"os"
-
-	"github.com/adrium/goheif"
 )
 
 // Skip Writer for exif writing
