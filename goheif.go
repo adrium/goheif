@@ -2,6 +2,7 @@ package goheif
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -19,6 +20,90 @@ var SafeEncoding bool
 type gridBox struct {
 	columns, rows int
 	width, height int
+}
+
+func chromaDimensions(width, height int, subsample image.YCbCrSubsampleRatio) (int, int) {
+	switch subsample {
+	case image.YCbCrSubsampleRatio422:
+		return (width + 1) / 2, height
+	case image.YCbCrSubsampleRatio420:
+		return (width + 1) / 2, (height + 1) / 2
+	case image.YCbCrSubsampleRatio440:
+		return width, (height + 1) / 2
+	case image.YCbCrSubsampleRatio411:
+		return (width + 3) / 4, height
+	case image.YCbCrSubsampleRatio410:
+		return (width + 3) / 4, (height + 1) / 2
+	default:
+		return width, height
+	}
+}
+
+func chromaYStep(subsample image.YCbCrSubsampleRatio) int {
+	switch subsample {
+	case image.YCbCrSubsampleRatio420, image.YCbCrSubsampleRatio440, image.YCbCrSubsampleRatio410:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func copyPlane(dst []byte, dstStart int, src []byte, srcStart int, width int, plane string) error {
+	if dstStart < 0 || srcStart < 0 {
+		return fmt.Errorf("%s plane offset out of bounds", plane)
+	}
+	if dstStart+width > len(dst) {
+		return fmt.Errorf("%s destination row out of bounds", plane)
+	}
+	if srcStart+width > len(src) {
+		return fmt.Errorf("%s source row out of bounds", plane)
+	}
+
+	copy(dst[dstStart:dstStart+width], src[srcStart:srcStart+width])
+	return nil
+}
+
+// stitchYCbCrTile copies one grid tile into dst using the tile's visible
+// width and height. libde265 strides can be wider than that visible size
+// (alignment padding, and 10-bit planes whose stride is in bytes), so the
+// stride must not be used as the destination x offset.
+func stitchYCbCrTile(dst *image.YCbCr, src *image.YCbCr, tileX, tileY int) error {
+	if dst.SubsampleRatio != src.SubsampleRatio {
+		return errors.New("inconsistent tile subsampling")
+	}
+
+	bounds := src.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	dstX := tileX * width
+	dstY := tileY * height
+
+	for row := 0; row < height; row++ {
+		srcStart := src.YOffset(bounds.Min.X, bounds.Min.Y+row)
+		dstStart := dst.YOffset(dstX, dstY+row)
+		if err := copyPlane(dst.Y, dstStart, src.Y, srcStart, width, "luma"); err != nil {
+			return err
+		}
+	}
+
+	chromaWidth, chromaHeight := chromaDimensions(width, height, src.SubsampleRatio)
+	dstChromaX := tileX * chromaWidth
+	dstChromaY := tileY * chromaHeight
+	srcChromaYStep := chromaYStep(src.SubsampleRatio)
+
+	for row := 0; row < chromaHeight; row++ {
+		srcStart := src.COffset(bounds.Min.X, bounds.Min.Y+row*srcChromaYStep)
+		dstStart := (dstChromaY+row)*dst.CStride + dstChromaX
+
+		if err := copyPlane(dst.Cb, dstStart, src.Cb, srcStart, chromaWidth, "cb"); err != nil {
+			return err
+		}
+		if err := copyPlane(dst.Cr, dstStart, src.Cr, srcStart, chromaWidth, "cr"); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func newGridBox(data []byte) (*gridBox, error) {
@@ -162,18 +247,8 @@ func Decode(r io.Reader) (image.Image, error) {
 				return nil, fmt.Errorf("Inconsistent tile dimensions")
 			}
 
-			// copy y stride data
-			for i := 0; i < rect.Dy(); i += 1 {
-				copy(out.Y[(y*tileHeight+i)*out.YStride+x*ycc.YStride:], ycc.Y[i*ycc.YStride:(i+1)*ycc.YStride])
-			}
-
-			// height of c strides
-			cHeight := len(ycc.Cb) / ycc.CStride
-
-			// copy c stride data
-			for i := 0; i < cHeight; i += 1 {
-				copy(out.Cb[(y*cHeight+i)*out.CStride+x*ycc.CStride:], ycc.Cb[i*ycc.CStride:(i+1)*ycc.CStride])
-				copy(out.Cr[(y*cHeight+i)*out.CStride+x*ycc.CStride:], ycc.Cr[i*ycc.CStride:(i+1)*ycc.CStride])
+			if err := stitchYCbCrTile(out, ycc, x, y); err != nil {
+				return nil, err
 			}
 
 			i += 1
